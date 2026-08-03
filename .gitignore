@@ -1,0 +1,10 @@
+# MovieLens is downloaded on first run, never committed. The GroupLens usage
+# license forbids redistributing the data, and the 25M set is over a gigabyte.
+data/
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.DS_Store

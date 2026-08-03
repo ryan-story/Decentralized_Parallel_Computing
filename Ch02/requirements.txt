@@ -1,0 +1,15 @@
+# Chapter 2: Decentralized Parallel Programming
+#
+# The chapter runs on the CPU with just these. A GPU is optional: with an NVIDIA
+# device, CuPy compiles matmulkernel.cu at run time and the same code runs there
+# instead. Everything reports which path it took.
+
+numpy>=1.24
+matplotlib>=3.7          # the harness notebook's figure
+jupyterlab>=4.0          # to open experiment_harness.ipynb
+streamlit>=1.30          # the app in app/
+
+# Optional, for the CUDA path. Match the wheel to your CUDA toolkit:
+#   pip install cupy-cuda12x        (CUDA 12.x)
+#   pip install cupy-cuda11x        (CUDA 11.x)
+# cupy-cuda12x
