@@ -1,0 +1,17 @@
+# Chapter 3: Decentralized Parallel Programming
+#
+# The chapter runs on the CPU with just these. A GPU is optional: with an NVIDIA
+# device, CuPy compiles meanreductionkernel.cu at run time and the same code runs
+# there instead. Everything reports which path it took.
+
+numpy>=1.24
+matplotlib>=3.7          # the harness notebook's figures
+jupyterlab>=4.0          # to open experiment_harness.ipynb
+
+# Optional, for the CUDA path. Match the wheel to your CUDA toolkit:
+#   pip install cupy-cuda12x        (CUDA 12.x)
+#   pip install cupy-cuda11x        (CUDA 11.x)
+# cupy-cuda12x
+#
+# Listing 3.6 (All-Reduce) additionally needs NCCL visible to CuPy, which means
+# Linux with NVIDIA GPUs. CuPy's installation guide covers adding NCCL.
