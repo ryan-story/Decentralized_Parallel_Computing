@@ -5,18 +5,24 @@ Plumbing for the notebook rather than a listing. It drives the chapter's own
 through thousands of epochs, with seeded arrival times and dropout standing in
 for a wide-area network.
 
-    run_scenario(sc)          one cell: `sc.n_epochs` epochs over one population
-    repeat(sc, reps=20)       the same cell over 20 arrival seeds, 1,200 epochs
-    all_participant(...)      the listing 3.5 coordinator under the same draws:
-                              it completes only when every worker is present,
-                              and then pays the slowest of them
+    run_scenario(sc)          one cell: `sc.n_epochs` epochs over one population.
+                              Every epoch is also read as the listing 3.5
+                              coordinator on the SAME draws: it completes only
+                              when every worker is present, and then pays the
+                              slowest of them.
+    pooled(sc, reps=20)       the same cell over 20 arrival seeds, every
+                              statistic pooled over all 1,200 epochs
+    repeat(sc, reps=20)       the same, averaged per seed (table 3.11 only)
 
 and one function per result the chapter reports, in chapter order:
 
-    headline()                tables 3.4 and 3.5
     dropout_sweep()           table 3.6 and figure 3.4
-    tail_sweep()              figure 3.5
     window_sweep()            table 3.8 and figures 3.7 and 3.8
+    tail_sweep()              figure 3.5, the window sweep's alpha = 1.5 cells
+    headline()                tables 3.4 and 3.5, read off the two sweeps
+
+Each condition is simulated once. A number that appears in a table and on a
+figure is the same number in both places.
     replay_determinism()      the 200-replay experiment of section 3.4.6
     contribution_state_checks()   table 3.10
     availability()            table 3.11
@@ -121,15 +127,18 @@ def run_scenario(sc, reduce=None):
 
         epoch.close_if_due(sc.deadline)
         manifest = epoch.freeze()
+        ap_completed = bool(present.all())            # listing 3.5 on the same draws
         row = {"epoch_id": e, "close_time": epoch.close_time,
                "committed": manifest is not None, "accepted": 0, "mean": None,
-               "records": 0}
+               "records": 0, "dev_norm": None, "ap_completed": ap_completed,
+               "ap_close": float(max(times.values())) if ap_completed else None}
         if manifest is not None:
             merged_sum, merged_count = cm.canonical_merge(
                 [(m.worker_id, m.partial_sum, m.partial_count) for m in manifest],
                 MERGE_PROFILE)
             row.update(accepted=len(manifest), mean=float(merged_sum / merged_count),
                        records=merged_count)
+            row["dev_norm"] = abs(row["mean"] - ref_mean) / scale
         epochs.append(row)
 
     done = [r for r in epochs if r["committed"]]
@@ -163,83 +172,56 @@ def repeat(sc, reps=20, reduce=None):
     return mean
 
 
-def all_participant(pop, rounds, dropout, tail_sigma, seed=4242):
-    """The listing 3.5 coordinator: complete only with every worker, at the slowest."""
-    rng = np.random.default_rng(seed)
-    completed, closes = 0, []
-    for _ in range(rounds):
-        present = rng.random(len(pop.workers)) >= dropout
-        times = arrival_times(pop, rng, tail_sigma=tail_sigma)
-        if present.all():
-            completed += 1
-            closes.append(max(times.values()))
-    return {"completion_rate": completed / rounds,
-            "close_p99": float(np.percentile(closes, 99)) if closes else None}
+def pooled(sc, reps=20, reduce=None):
+    """One cell over `reps` arrival seeds, every statistic pooled over all epochs.
+
+    Percentiles are taken over the pooled epochs rather than averaged across
+    seeds, and both systems are read off the same draws.
+    """
+    rows = []
+    for r in range(reps):
+        rows += run_scenario(Scenario(**{**asdict(sc), "seed": sc.seed + r}), reduce)[0]
+    done = [e for e in rows if e["committed"]]
+    means = [e["mean"] for e in done]
+    closes = [e["close_time"] for e in rows]
+    ap_closes = [e["ap_close"] for e in rows if e["ap_completed"]]
+    return {
+        "epochs": len(rows),
+        "commit_rate": len(done) / len(rows),
+        "close_p50": float(np.percentile(closes, 50)),
+        "close_p99": float(np.percentile(closes, 99)),
+        "operands": float(np.mean([e["accepted"] for e in done])) if done else 0.0,
+        "mean": float(np.mean(means)) if means else None,
+        "mean_p05": float(np.percentile(means, 5)) if means else None,
+        "mean_p95": float(np.percentile(means, 95)) if means else None,
+        "mean_deviation_norm": float(np.mean([e["dev_norm"] for e in done])) if done else None,
+        "ap_completion": len(ap_closes) / len(rows),
+        "ap_close_p99": float(np.percentile(ap_closes, 99)) if ap_closes else None,
+    }
 
 
 # ------------------------------------------------------------- the results
 
-# Table 3.3: (dropout, arrival tail, deadline) for each experiment
-CONDITIONS = [("healthy overhead", 0.00, 0.1, 2.0),
-              ("dropout sweep", 0.10, 0.1, 2.0),
-              ("latency-tail sweep", 0.00, 1.2, 8.0)]
-
-
-def headline(reps=20, epochs=60, k=12, alpha=1.5, reduce=None):
-    """Tables 3.4 and 3.5: both systems under the three conditions of table 3.3."""
-    pop = make_population(seed=0)
-    rows = []
-    for name, drop, sigma, deadline in CONDITIONS:
-        ap = all_participant(pop, epochs * reps, drop, sigma)
-        means, closes, ops, done, opened = [], [], [], 0, 0
-        for r in range(reps):
-            per, _ = run_scenario(Scenario(k=k, alpha=alpha, dropout=drop, tail_sigma=sigma,
-                                           deadline=deadline, n_epochs=epochs, seed=r), reduce)
-            for e in per:
-                opened += 1
-                closes.append(e["close_time"])
-                if e["committed"]:
-                    done += 1
-                    means.append(e["mean"])
-                    ops.append(e["accepted"])
-        rows.append({
-            "experiment": name,
-            "ap_completion": ap["completion_rate"], "ap_close_p99": ap["close_p99"],
-            "cm_completion": done / opened, "cm_close_p99": float(np.percentile(closes, 99)),
-            "cm_operands": float(np.mean(ops)), "cm_mean": float(np.mean(means)),
-            "cm_mean_p05": float(np.percentile(means, 5)),
-            "cm_mean_p95": float(np.percentile(means, 95)),
-        })
-    return rows
-
-
 DROPOUTS = (0.0, 0.05, 0.10, 0.20, 0.30)
-
-
-def dropout_sweep(reps=20, quorums=(16, 12, 10), reduce=None):
-    """Table 3.6 and figure 3.4. Arrival tail 0.1, deadline 2.0.
-
-    The all-participant column is its own seeded run of 2,000 rounds per dropout
-    level, which is why it differs slightly from table 3.4's 0.190 at 10 percent.
-    """
-    rng = np.random.default_rng(0)
-    rows = []
-    for p in DROPOUTS:
-        completed = 0
-        for _ in range(2000):
-            present = rng.random(16) >= p
-            rng.lognormal(0.0, 0.1, size=16)          # the round's arrival draw
-            completed += bool(present.all())
-        row = {"dropout": p, "all_participant": completed / 2000}
-        for k in quorums:
-            row[k] = repeat(Scenario(k=k, dropout=p), reps, reduce)["commit_rate"]
-        rows.append(row)
-    return rows
-
-
 SIGMAS = (0.1, 0.3, 0.5, 0.8, 1.2)
 ALPHAS = (1.0, 1.25, 1.5, 2.0)
 WINDOW_TAILS = (0.1, 0.5, 1.2)       # tight, moderate, severe
+
+
+def dropout_sweep(reps=20, quorums=(16, 12, 10), alpha=1.5, reduce=None):
+    """Table 3.6 and figure 3.4. Arrival tail 0.1, deadline 2.0, alpha 1.5.
+
+    The all-participant column is read off the same epochs as the quorums.
+    """
+    rows = []
+    for p in DROPOUTS:
+        cells = {k: pooled(Scenario(k=k, alpha=alpha, dropout=p, tail_sigma=0.1,
+                                    deadline=2.0), reps, reduce) for k in quorums}
+        row = {"dropout": p, "all_participant": cells[quorums[0]]["ap_completion"],
+               "cells": cells}
+        row.update({k: c["commit_rate"] for k, c in cells.items()})
+        rows.append(row)
+    return rows
 
 
 def window_sweep(reps=20, reduce=None):
@@ -249,7 +231,7 @@ def window_sweep(reps=20, reduce=None):
     cells |= {(2.0, 0.1, 1.5), (2.0, 1.2, 1.5)}
     out = {}
     for scale, sigma, alpha in sorted(cells):
-        out[(scale, sigma, alpha)] = repeat(Scenario(
+        out[(scale, sigma, alpha)] = pooled(Scenario(
             k=12, alpha=alpha, tail_sigma=sigma, dropout=0.0, deadline=8.0,
             time_scale=scale), reps, reduce)
     return out
@@ -258,14 +240,34 @@ def window_sweep(reps=20, reduce=None):
 def tail_sweep(window):
     """Figure 3.5: p99 close against arrival-tail severity, no dropout.
 
-    The all-participant curve is the p99 of the slowest of sixteen workers over
-    4,000 seeded rounds; commit-and-merge is k = 12, alpha = 1.5, deadline 8.0.
+    These are the window sweep's alpha = 1.5 cells: k = 12, deadline 8.0, both
+    systems on the same 1,200 epochs per point.
     """
-    rng = np.random.default_rng(7)
-    ap = [float(np.percentile([rng.lognormal(0.0, s, size=16).max() for _ in range(4000)], 99))
-          for s in SIGMAS]
-    cm_p99 = [window[(1.0, s, 1.5)]["close_p99"] for s in SIGMAS]
-    return {"sigma": list(SIGMAS), "all_participant": ap, "commit_and_merge": cm_p99}
+    cells = [window[(1.0, s, 1.5)] for s in SIGMAS]
+    return {"sigma": list(SIGMAS),
+            "all_participant": [c["ap_close_p99"] for c in cells],
+            "commit_and_merge": [c["close_p99"] for c in cells]}
+
+
+def headline(drop, window):
+    """Tables 3.4 and 3.5, read off the sweeps rather than simulated again.
+
+        healthy overhead     the dropout sweep at 0 percent  (tail 0.1, deadline 2.0)
+        dropout sweep        the dropout sweep at 10 percent
+        latency-tail sweep   the tail sweep at sigma 1.2     (deadline 8.0)
+    """
+    at = {r["dropout"]: r["cells"][12] for r in drop}
+    rows = []
+    for name, c in (("healthy overhead", at[0.0]), ("dropout sweep", at[0.10]),
+                    ("latency-tail sweep", window[(1.0, 1.2, 1.5)])):
+        rows.append({
+            "experiment": name,
+            "ap_completion": c["ap_completion"], "ap_close_p99": c["ap_close_p99"],
+            "cm_completion": c["commit_rate"], "cm_close_p99": c["close_p99"],
+            "cm_operands": c["operands"], "cm_mean": c["mean"],
+            "cm_mean_p05": c["mean_p05"], "cm_mean_p95": c["mean_p95"],
+        })
+    return rows
 
 
 def replay_determinism(trials=200, seed=0):
