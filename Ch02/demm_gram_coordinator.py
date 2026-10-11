@@ -1,30 +1,27 @@
-"""Chapter 2, section 2.4.2: the DeMM Gram coordinator.
+"""Chapter 2, section 2.4: DeMM applied to the item-item model.
 
-The same coordinator as `distributed_gram_coordinator`, with one change: workers
-return a compact summary instead of a full partial product.
+Section 2.4.1 sets A = R^T and B = R and cuts the contracted dimension, the users:
+worker r receives its own users' rows R_r and never sees anyone else's. Its partial
+product R_r^T R_r is symmetric, so the left and right factors describe the same
+subspace and a worker sends one factor, L_r, instead of two.
 
-    exact baseline   worker r returns  R_r^T R_r        [n_items, n_items]
-    DeMM             worker r returns  (L_r, diag_r)    [n_items, q] + [n_items]
+    demm_gram_worker(device_id, R_r, q, s, h, _SRC, seed)
+        one worker: Algorithm 2.1 (listing 2.8) with A_r = R_r^T and B_r = R_r,
+        returning L_r and the exact item counts diag(R_r^T R_r)
+    demm_gram(R, device_ids, q, ...)
+        the coordinator: one user shard per worker, factors kept, counts summed
+    inbound_bytes(n_items, q, n_workers)
+        what the workers send back
+    recommend(model, liked)
+        recommendations straight from the factors, without forming the model
 
-The merge is still an associative sum. The diagonals add exactly, and the factors
-combine by concatenation, because summing outer products stacks their factors:
-
-    sum_r L_r L_r^T  =  [L_0 | L_1 | ...] [L_0 | L_1 | ...]^T
-
-so the merged model is just the collection of factors. Nothing here reconstructs
-the [n_items, n_items] matrix. Section 2.4.2 shows `C_hat += L_r @ M_r_T` because
-it states plainly what the factors mean, but a deployment does not pay that: a
-query goes through the factors as `sum_r L_r (L_r^T y)`, which is what `recommend`
-below does, so the full matrix is never formed on any machine.
-
-Deviations from the book's listing, and why:
-
-  * `participants` lets the app drop a worker and watch its term leave the sum.
-  * `demm_gram` returns the factors rather than assembling `C_hat`. The book shows
-    the assembly because it states plainly what the factors mean, and then says a
-    deployment should not pay for it; this is that deployment. `merged_gram` will
-    assemble it if you want to measure reconstruction error, and `recommend` goes
-    straight through the factors as the book describes.
+The exact item counts. The recommender divides every co-occurrence by
+sqrt(count_i * count_j), so those counts are its normalizer. A worker sends them
+exactly, one number per item (16 KB for 4,000 items), rather than letting them be
+approximated along with everything else: a rank-q fit reproduces the large
+diagonal entries and distorts the normalized scores, and at MovieLens 25M scale
+that costs most of the quality Table 2.1 reports. The counts are included in the
+returned bytes.
 """
 
 from __future__ import annotations
@@ -33,103 +30,87 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from demm_coordinator import _SRC
 from demm_launcher import demm_launcher
-from distributed_gram_coordinator import shard_boundaries
 
 BYTES_PER_FLOAT = 4
 
 
+def shard_boundaries(p, n_workers):
+    """Contiguous shard boundaries over the shared dimension, as listing 2.9 cuts it."""
+    return np.linspace(0, p, n_workers + 1, dtype=int)
+
+
+def demm_gram_worker(device_id, R_r, q, s, h, _SRC, seed):
+    """One worker's summary of R_r^T R_r: the factor L_r and the exact item counts."""
+    L_r, _ = demm_launcher(device_id, R_r.T, R_r, q, s, h, _SRC, seed)   # M_r = L_r
+    diag_r = (R_r * R_r).sum(axis=0).astype(np.float32)
+    return L_r.astype(np.float32), diag_r
+
+
 def demm_gram(R, device_ids=(0,), q=32, s=8, h=1, seed=1000, participants=None):
-    """Build the item-item model as a merged DeMM summary.
+    """The item-item model as a collection of per-worker factors.
 
-    `participants` optionally restricts which workers report, which is how the app
-    shows what a missing worker costs. A worker that does not report simply drops
-    its term from the sum.
+    `participants` restricts which workers report: a missing worker removes only
+    its own users' term from the sum.
     """
-    R = np.asarray(R, dtype=np.float32)
+    R = np.ascontiguousarray(R, dtype=np.float32)
     n_users, n_items = R.shape
-
-    # Exactly the blocked-matmul setup of section 2.3.2, so the DeMM coordinator
-    # and the exact one hand their workers the same blocks.
-    A = R.T                                    # [n_items, n_users]
-    B = R                                      # [n_users, n_items]
-
     boundaries = shard_boundaries(n_users, len(device_ids))
     chosen = range(len(device_ids)) if participants is None else sorted(participants)
 
     with ThreadPoolExecutor(max_workers=max(len(device_ids), 1)) as executor:
         futures = []
         for worker_id in chosen:
-            s_r = boundaries[worker_id]
-            e_r = boundaries[worker_id + 1]
-
-            A_r = np.ascontiguousarray(A[:, s_r:e_r])     # this worker's user columns
-            B_r = np.ascontiguousarray(B[s_r:e_r, :])     # the matching user rows
-
+            R_r = R[boundaries[worker_id]:boundaries[worker_id + 1]]
             futures.append(executor.submit(
-                demm_launcher, device_ids[worker_id % len(device_ids)],
-                A_r, B_r, q, s, h, seed + worker_id))     # a different seed each
-
+                demm_gram_worker, device_ids[worker_id], R_r, q, s, h, _SRC,
+                seed + worker_id))
         summaries = [f.result() for f in futures]
 
-    factors = [L_r for L_r, _ in summaries]
     diag = np.zeros(n_items, dtype=np.float32)
     for _, d_r in summaries:
-        diag = diag + d_r                                  # exact diagonals sum
+        diag += d_r
 
-    return {
-        "factors": factors,
-        "diag": diag,
-        "n_items": int(n_items),
-        "q": int(q),
-        "workers_reporting": list(chosen),
-        "n_workers": len(device_ids),
-    }
+    return {"factors": [L_r for L_r, _ in summaries], "diag": diag,
+            "n_items": int(n_items), "q": int(q),
+            "workers_reporting": list(chosen), "n_workers": len(device_ids)}
 
 
 def inbound_bytes(n_items, q, n_workers):
-    """Bytes the coordinator receives: a [n_items, q] factor plus an [n_items]
-    diagonal from each worker. Fixed in the number of users, like the exact
-    exchange, but set by the RANK rather than by the catalogue squared."""
+    """Bytes back: an n_items by q factor plus n_items exact counts, per worker."""
     per_worker = int(n_items) * int(q) * BYTES_PER_FLOAT + int(n_items) * BYTES_PER_FLOAT
     return per_worker * int(n_workers)
 
 
 def merged_gram(model):
-    """Materialize the approximate model. Only for measuring reconstruction error:
-    scoring never calls this, which is the whole point of keeping the factors."""
+    """The approximate model, assembled. Only for measurement; scoring never needs it."""
     n = model["n_items"]
     G_hat = np.zeros((n, n), dtype=np.float32)
     for L_r in model["factors"]:
         G_hat += L_r @ L_r.T
-    np.fill_diagonal(G_hat, model["diag"])                 # the exact normalizer
+    np.fill_diagonal(G_hat, model["diag"])
     return G_hat
 
 
 def recommend(model, liked_items, top_n=10, exclude_seen=True):
-    """Score items for a user who liked `liked_items`, straight from the factors.
+    """Recommendations straight from the factors: G y = sum_r L_r (L_r^T y).
 
-    With `y` the user's interaction vector and `d` the exact diagonal, the cosine
-    normalization divides by `sqrt(d)` on the way in and again on the way out,
-    and the model is applied as `sum_r L_r (L_r^T y)`. The [n_items, n_items]
-    matrix is never built.
+    Same cosine normalization as the exact model, using the exact item counts.
+    The n_items by n_items model is never formed.
     """
-    diag = model["diag"]
-    inv = (1.0 / np.sqrt(np.clip(diag, 1e-9, None))).astype(np.float32)
-
+    inv = (1.0 / np.sqrt(np.clip(model["diag"], 1e-9, None))).astype(np.float32)
     liked = np.asarray(list(liked_items), dtype=int)
     if liked.size == 0:
         return np.array([], dtype=int), np.array([], dtype=np.float32)
 
     y = np.zeros(model["n_items"], dtype=np.float32)
     y[liked] = 1.0
-    y = y * inv                                            # scale in
-
+    y *= inv
     scores = np.zeros(model["n_items"], dtype=np.float32)
     for L_r in model["factors"]:
-        scores += L_r @ (L_r.T @ y)                        # G y through the factors
-    scores = scores * inv                                  # scale out
-
+        scores += L_r @ (L_r.T @ y)
+    scores *= inv
     if exclude_seen:
         scores[liked] = -np.inf
 

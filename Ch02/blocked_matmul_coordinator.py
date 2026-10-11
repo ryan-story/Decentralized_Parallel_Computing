@@ -1,177 +1,183 @@
-"""Exact distributed matrix multiplication on a two-dimensional worker grid.
+"""Chapter 2, section 2.2.2 and section 2.4: the blocked coordinator.
 
-This is section 2.3.1. The output matrix `C` is tiled across a `w_r` by `w_c`
-grid of workers, each worker owns one tile, and each worker computes its tile
-from a row block of `A` and a column block of `B`. Both blocks carry the whole
-contracted dimension `p`, so a worker finishes its tile alone: no partial values
-are ever exchanged or summed.
+    blocked_matmul(A, B, device_ids, b_m, b_n)   listing 2.7. Cut the output into a
+                                                 b_m by b_n grid of blocks C(I, J),
+                                                 give each worker the slabs A(I) and
+                                                 B(J), and write each returned block
+                                                 into place.
 
-The consequence is the one the chapter cares about. Because the tiles are
-disjoint, what comes back across the network is exactly one copy of `C`, and it
-stays exactly one copy however many workers there are. Splitting the contracted
-dimension instead, which is what `distributed_gram_coordinator.py` is forced to
-do, returns one COMPLETE `m` by `n` partial per worker, so the return traffic
-grows with every worker added.
+and the same coordinator applied to the project of section 2.4:
 
-    bytes across the network, for one exact product
+    blocked_gram(R, device_ids)   the item-item model G = R^T R with A = R^T and
+                                  B = R (section 2.4.1). Exact.
+    gram_bytes(...)               what crosses the network, both directions.
+    recommend(G, liked)           item-item recommendations from the exact model.
 
-        2-D output tiling          w_c * |A| + w_r * |B| + |C|
-        1-D contraction split      |A| + |B| + w * |C|
+The book writes listing 2.7 as a program with `device_ids = [0, 1, 2, 3]` and
+`b_m = b_n = 2` at module level. Here the same statements are the body of
+`blocked_matmul`, with those values as defaults, so the notebook can import it.
+Device IDs may repeat: on a one-GPU machine `[0] * 4` gives four workers that
+take turns on the same device.
 
-`MatrixMulKernel` is identical in both. Only the coordinator differs.
-
-    python blocked_matmul_coordinator.py     # self-check against a centralized product
+    python blocked_matmul_coordinator.py     # checks against a centralized product
 """
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-import matmul_launcher
+from matmul_launcher import gpu_available, matmul_launcher
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(_HERE, "matmulkernel.cu"), encoding="utf-8") as _f:
+    _SRC = _f.read()
 
 BYTES_PER_FLOAT = 4
 
-# users staged onto the device at a time when building a Gram tile, chosen so an
-# operand chunk stays well under a consumer GPU's memory
-MAX_USERS_PER_LAUNCH = 2e7
 
-
-def choose_worker_grid(w, m, n):
-    """Factor `w` into `(w_r, w_c)`, favouring the grid with the smallest blocks.
-
-    Each worker is sent `m / w_r` rows of `A` and `n / w_c` columns of `B`, both
-    carrying the full contracted dimension, so what a worker must receive is
-    proportional to `m / w_r + n / w_c`. Minimizing that sum keeps a worker from
-    being handed one very tall block and one very thin one. On a square problem it
-    picks the squarest grid; on a wide one it deliberately does not.
-    """
-    candidates = []
-    for worker_rows in range(1, w + 1):
-        if w % worker_rows == 0:
-            worker_cols = w // worker_rows
-            block_input = m / worker_rows + n / worker_cols
-            candidates.append((block_input, worker_rows, worker_cols))
-    _, worker_rows, worker_cols = min(candidates)
-    return worker_rows, worker_cols
-
-
-def blocked_matmul(A, B, device_ids=(0,), return_layout=False):
-    """Exact `C = A B`, with the output tiled across a grid of `len(device_ids)` workers."""
-    A = np.ascontiguousarray(A, dtype=np.float32)
-    B = np.ascontiguousarray(B, dtype=np.float32)
-    m, p = A.shape
-    if B.shape[0] != p:
-        raise ValueError(f"inner dimensions disagree: A is {A.shape}, B is {B.shape}")
+def blocked_matmul(A, B, device_ids=(0, 1, 2, 3), b_m=2, b_n=2, _SRC=_SRC):
+    m = A.shape[0]
+    p = A.shape[1]
     n = B.shape[1]
 
-    worker_rows, worker_cols = choose_worker_grid(len(device_ids), m, n)
-    row_boundaries = np.linspace(0, m, worker_rows + 1, dtype=int)
-    col_boundaries = np.linspace(0, n, worker_cols + 1, dtype=int)
+    row_boundaries = np.linspace(
+        0,
+        m,
+        b_m + 1,
+        dtype=int,
+    )
 
-    C = np.empty((m, n), dtype=np.float32)
-    layout = []
+    col_boundaries = np.linspace(
+        0,
+        n,
+        b_n + 1,
+        dtype=int,
+    )
 
-    with ThreadPoolExecutor(max_workers=len(device_ids)) as executor:
-        jobs, worker_id = [], 0
-        for i in range(worker_rows):
-            row_start, row_end = row_boundaries[i], row_boundaries[i + 1]
-            for j in range(worker_cols):
-                col_start, col_end = col_boundaries[j], col_boundaries[j + 1]
+    with ThreadPoolExecutor(
+        max_workers=len(device_ids)
+    ) as executor:
 
-                A_i = A[row_start:row_end, :]      # full contracted dimension
-                B_j = B[:, col_start:col_end]      # full contracted dimension
+        futures = []
 
-                future = executor.submit(matmul_launcher.matmul_launcher,
-                                         device_ids[worker_id], A_i, B_j)
-                jobs.append((future, row_start, row_end, col_start, col_end))
-                layout.append({"worker": worker_id, "grid": (i, j),
-                               "tile": (int(row_end - row_start), int(col_end - col_start))})
+        worker_id = 0
+
+        for I in range(b_m):
+            s_I = row_boundaries[I]
+            e_I = row_boundaries[I + 1]
+            A_I = A[s_I:e_I, :]
+
+            for J in range(b_n):
+                s_J = col_boundaries[J]
+                e_J = col_boundaries[J + 1]
+                B_J = B[:, s_J:e_J]
+
+                future = executor.submit(
+                    matmul_launcher,
+                    device_ids[worker_id],
+                    A_I,
+                    B_J,
+                    _SRC
+                )
+
+                futures.append((future, s_I, e_I, s_J, e_J))
+
                 worker_id += 1
 
-        for future, row_start, row_end, col_start, col_end in jobs:
-            C[row_start:row_end, col_start:col_end] = future.result()
+    C = np.empty((m, n), dtype=np.float32)
 
-    if return_layout:
-        return C, {"grid": (worker_rows, worker_cols), "workers": layout}
+    for (future, s_I, e_I, s_J, e_J) in futures:
+        C[s_I:e_I, s_J:e_J] = future.result()
+
     return C
 
 
+# ------------------------------------------------------------- section 2.4
+
+def choose_worker_grid(w, m, n):
+    """Factor `w` workers into a `(b_m, b_n)` grid, favouring the smallest slabs.
+
+    Each worker receives `m / b_m` rows of A and `n / b_n` columns of B, both
+    spanning the whole shared dimension, so its input is proportional to
+    `m / b_m + n / b_n`. Eight workers over the square item-item model become
+    a 2 by 4 grid.
+    """
+    candidates = []
+    for rows in range(1, w + 1):
+        if w % rows == 0:
+            cols = w // rows
+            candidates.append((m / rows + n / cols, rows, cols))
+    _, rows, cols = min(candidates)
+    return rows, cols
+
+
+# users staged onto the device at a time when forming one Gram block, so a slab
+# that spans 162,539 users never has to sit in GPU memory whole
+MAX_USERS_PER_LAUNCH = 2e7
+
+
 def blocked_gram(R, device_ids=(0,), participants=None):
-    """The item-item model `G = R^T R` computed by the blocked coordinator.
+    """The item-item model G = R^T R from the blocked coordinator.
 
-    A Gram matrix is just a product whose two operands are the same data, so this
-    is `blocked_matmul(R.T, R)` with one change made for memory: the tile is formed
-    from column slices of `R` directly rather than from a materialized `R.T`, which
-    would be a second copy of the whole dataset.
+    Block (I, J) needs A(I) = R[:, item block I]^T and B(J) = R[:, item block J].
+    Both span every user, so a worker finishes its block alone and the blocks are
+    disjoint. At MovieLens 25M scale a slab is far larger than the block it
+    produces (4,000 items over 162,539 users), so each block is accumulated over
+    chunks of users. That is the same sum over users, staged so the device never
+    holds a whole slab at once.
 
-    Worker `(I, J)` receives the columns of `R` for item block `I` and for item
-    block `J`. Both slabs span every user, which is what lets the worker finish its
-    tile alone. The tiles are disjoint, so the coordinator assembles them.
-
-    `participants` drops workers to simulate failure. A dropped worker leaves its
-    tile at zero, which is visibly different from the reduction case: a missing
-    contribution does not shrink the answer, it punches a hole in it.
+    `participants` drops workers: a missing worker leaves its block at zero.
     """
     R = np.ascontiguousarray(R, dtype=np.float32)
-    n_items = R.shape[1]
-    w = len(device_ids)
-    worker_rows, worker_cols = choose_worker_grid(w, n_items, n_items)
-    rb = np.linspace(0, n_items, worker_rows + 1, dtype=int)
-    cb = np.linspace(0, n_items, worker_cols + 1, dtype=int)
-    live = set(range(w) if participants is None else participants)
-
-    n_users = R.shape[0]
-    # A worker's slabs span every user, so at catalogue scale they are far larger
-    # than the tile they produce: 4,000 items over 162,539 users is a 1.3 GB operand
-    # for an 8 MB result. The tile is therefore accumulated over chunks of users,
-    # which is the same contraction the worker would do anyway, just staged so the
-    # device never holds the whole slab at once.
+    n_users, n_items = R.shape
+    b_m, b_n = choose_worker_grid(len(device_ids), n_items, n_items)
+    rb = np.linspace(0, n_items, b_m + 1, dtype=int)
+    cb = np.linspace(0, n_items, b_n + 1, dtype=int)
+    live = set(range(len(device_ids)) if participants is None else participants)
     chunk = max(1, int(MAX_USERS_PER_LAUNCH // max(n_items, 1)))
 
     G = np.zeros((n_items, n_items), dtype=np.float32)
     worker_id = 0
-    for I in range(worker_rows):
-        for J in range(worker_cols):
+    for I in range(b_m):
+        for J in range(b_n):
             if worker_id in live:
-                tile = np.zeros((rb[I + 1] - rb[I], cb[J + 1] - cb[J]), dtype=np.float32)
+                block = np.zeros((rb[I + 1] - rb[I], cb[J + 1] - cb[J]), dtype=np.float32)
                 for u0 in range(0, n_users, chunk):
                     u1 = min(u0 + chunk, n_users)
-                    A_chunk = np.ascontiguousarray(R[u0:u1, rb[I]:rb[I + 1]].T)
-                    B_chunk = np.ascontiguousarray(R[u0:u1, cb[J]:cb[J + 1]])
-                    tile += matmul_launcher.matmul_launcher(
-                        device_ids[worker_id], A_chunk, B_chunk)
-                G[rb[I]:rb[I + 1], cb[J]:cb[J + 1]] = tile
+                    A_I = np.ascontiguousarray(R[u0:u1, rb[I]:rb[I + 1]].T)
+                    B_J = np.ascontiguousarray(R[u0:u1, cb[J]:cb[J + 1]])
+                    block += matmul_launcher(device_ids[worker_id], A_I, B_J, _SRC)
+                G[rb[I]:rb[I + 1], cb[J]:cb[J + 1]] = block
             worker_id += 1
     return G
 
 
 def gram_bytes(n_items, n_interactions, w):
-    """Network bytes for the blocked Gram, in both directions.
+    """Network bytes for the blocked Gram, in both directions (section 2.4.3).
 
-    Outbound is the expensive half and it is easy to miss. Each item block of `R`
-    is needed by every worker in its grid row and again by every worker in its grid
-    column, so the coordinator ships `w_r + w_c` copies of the dataset. Inbound is
-    the cheap half: the tiles are disjoint, so exactly one copy of `G` comes back
-    however many workers there are.
+    Out: each item block of R is needed by every worker in its grid row and again
+    by every worker in its grid column, so the coordinator ships b_m + b_n copies
+    of the dataset (six for a 2 by 4 grid). R is counted as a coordinate list,
+    two 4-byte numbers per interaction.
+
+    Back: the blocks are disjoint, so exactly one copy of G returns.
     """
-    worker_rows, worker_cols = choose_worker_grid(w, n_items, n_items)
+    b_m, b_n = choose_worker_grid(w, n_items, n_items)
     raw = int(n_interactions) * 2 * BYTES_PER_FLOAT
-    out = (worker_rows + worker_cols) * raw
+    out = (b_m + b_n) * raw
     back = int(n_items) * int(n_items) * BYTES_PER_FLOAT
-    return {"grid": (worker_rows, worker_cols), "outbound": int(out),
-            "inbound": int(back), "total": int(out + back)}
+    return {"grid": (b_m, b_n), "outbound": int(out), "inbound": int(back),
+            "total": int(out + back)}
 
 
 def recommend(G, liked_items, top_n=10, exclude_seen=True):
-    """Score items for a user who liked `liked_items`, straight from the exact model.
+    """Item-item recommendations from the exact model.
 
-    Item-item collaborative filtering, cosine-normalized by the model's own
-    diagonal: `sim[i, j] = G[i, j] / sqrt(G[i, i] G[j, j])`, and a user's score for
-    item `j` is the sum of `sim[i, j]` over the items `i` they already liked. The
-    normalizer is the item-count diagonal that section 2.4.1 says has to be exact;
-    here it is, because this model is exact.
+    Scores are cosine-normalized co-occurrences: G[i, j] / sqrt(G[i, i] G[j, j]),
+    summed over the items the user already liked.
     """
     G = np.asarray(G, dtype=np.float32)
     inv = (1.0 / np.sqrt(np.clip(np.diag(G), 1e-9, None))).astype(np.float32)
@@ -188,32 +194,13 @@ def recommend(G, liked_items, top_n=10, exclude_seen=True):
     return top, scores[top]
 
 
-def inbound_bytes(m, n, p, w):
-    """What crosses the network for one exact product under the output tiling.
-
-    The `results_back` term is the whole point: it is `m * n * 4` regardless of `w`,
-    because the tiles are disjoint and together they are exactly `C`.
-    """
-    worker_rows, worker_cols = choose_worker_grid(w, m, n)
-    F = BYTES_PER_FLOAT
-    operands_out = worker_cols * m * p * F + worker_rows * p * n * F
-    results_back = m * n * F
-    return {"grid": (worker_rows, worker_cols),
-            "operands_out": int(operands_out),
-            "results_back": int(results_back),
-            "total": int(operands_out + results_back)}
-
-
 if __name__ == "__main__":
     rng = np.random.default_rng(0)
-    print(f"CUDA kernel path live: {matmul_launcher.gpu_available()}\n")
-    for (m, n, p), w in [((256, 192, 320), 4), ((300, 300, 128), 6), ((129, 257, 64), 8)]:
+    print(f"CUDA kernel path live: {gpu_available()}\n")
+    for (m, n, p), (b_m, b_n) in [((1000, 700, 500), (2, 2)), ((129, 257, 64), (2, 4))]:
         A = rng.standard_normal((m, p)).astype(np.float32)
         B = rng.standard_normal((p, n)).astype(np.float32)
-        C, lay = blocked_matmul(A, B, [0] * w, return_layout=True)
+        C = blocked_matmul(A, B, device_ids=[0] * (b_m * b_n), b_m=b_m, b_n=b_n)
         ref = A.astype(np.float64) @ B.astype(np.float64)
-        err = np.abs(C - ref).max() / np.abs(ref).max()
-        b = inbound_bytes(m, n, p, w)
-        tiles = sum(t["tile"][0] * t["tile"][1] for t in lay["workers"])
-        print(f"  m={m:4} n={n:4} p={p:4} w={w:2}  grid={lay['grid']}  rel err={err:.2e}  "
-              f"tiles cover C: {tiles == m * n}  back={b['results_back']/1e6:.2f} MB")
+        print(f"  m={m:5} n={n:4} p={p:4}  grid {b_m} x {b_n}:  max rel err "
+              f"{np.abs(C - ref).max() / np.abs(ref).max():.2e}")

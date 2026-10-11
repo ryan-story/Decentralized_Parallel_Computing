@@ -5,6 +5,7 @@
 # instead. Everything reports which path it took.
 
 numpy>=1.24
+pandas>=2.0            # MovieLens loading and the held-out split
 matplotlib>=3.7          # the harness notebook's figure
 jupyterlab>=4.0          # to open experiment_harness.ipynb
 streamlit>=1.30          # the app in app/

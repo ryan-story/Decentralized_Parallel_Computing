@@ -1,21 +1,14 @@
-// Chapter 2, section 2.2.3: the ordinary matrix multiply, one thread per output
-// element.
+// Chapter 2, sections 2.1.1 to 2.1.3: the matrix multiplication kernel, one thread
+// per output element (listing 2.4).
 //
-// This is the only device kernel the chapter needs. Everything after it is a
-// different way of CALLING it:
+// This is the only device code in the chapter. Everything after it is a different
+// way of calling it:
 //
-//   section 2.3.1  blocked matmul      one call per worker, on a slice of the
-//                                      contracted dimension
-//   section 2.3.2  distributed Gram    the same, with A = R^T and B = R
-//   section 2.4.2  DeMM                several calls per worker, on thin operands,
-//                                      so the partial product is never formed
+//   section 2.2  blocked matmul   one launch per worker, on the slabs A(I) and B(J)
+//   section 2.3  DeMM             several launches per worker, on thin operands,
+//                                 so the partial product is never formed
 //
-// The operands are rectangular rather than square because the blocked and Gram
-// cases need that: a worker holding a slice of the contraction multiplies an
-// [m, p] block by a [p, n] block, and those are only square by coincidence.
-//
-// Row-major indexing throughout, as section 2.2.3 derives in equations 2.4 and
-// 2.5: A[i, j] == A[i * p + j], so the stride is the matrix's own column count.
+// Row-major indexing throughout, as equation 2.3 derives: A[i, k] == a[i * p + k].
 
 extern "C" __global__ void MatrixMulKernel(
     const float* A,      // [m, p] left operand

@@ -11,7 +11,6 @@ titles so the app can show recommendations a human can read.
 
 from __future__ import annotations
 
-import csv
 import os
 import urllib.request
 import zipfile
@@ -66,63 +65,54 @@ def load(dataset="ml-latest-small", top_items=None, min_item_ratings=20,
     _download(dataset)
     root = os.path.join(DATA, dataset)
 
-    # Every rating is an interaction, whatever its value. The threshold decides
-    # only what counts as a HIT among the held-out ones.
-    ratings = []
-    with open(os.path.join(root, "ratings.csv"), newline="", encoding="utf-8") as f:
-        r = csv.reader(f)
-        next(r)
-        for row in r:
-            ratings.append((int(row[0]), int(row[1]), float(row[2])))
+    import pandas as pd
 
-    names = {}
-    with open(os.path.join(root, "movies.csv"), newline="", encoding="utf-8") as f:
-        r = csv.reader(f)
-        next(r)
-        for row in r:
-            names[int(row[0])] = row[1]
+    df = pd.read_csv(os.path.join(root, "ratings.csv"),
+                     usecols=["userId", "movieId", "rating"])
+    movies = pd.read_csv(os.path.join(root, "movies.csv"), usecols=["movieId", "title"])
+    names = dict(zip(movies.movieId.values, movies.title.values))
 
-    counts = {}
-    for _, i, _rating in ratings:
-        counts[i] = counts.get(i, 0) + 1
-    keep = [i for i, c in counts.items() if c >= min_item_ratings]
+    # The catalogue: items with at least `min_item_ratings` ratings, or the
+    # `top_items` most-rated items when that is given.
+    counts = df.movieId.value_counts()
+    keep = counts[counts >= min_item_ratings].index
     if top_items is not None:
-        keep = sorted(keep, key=lambda i: -counts[i])[:top_items]
-    keep_set = set(keep)
+        keep = counts.nlargest(top_items).index
+    df = df[df.movieId.isin(keep)].copy()
 
-    items = sorted(keep_set)
-    iidx = {i: k for k, i in enumerate(items)}
-    users = sorted({u for u, i, _ in ratings if i in keep_set})
+    users = df.userId.unique()
+    items = np.sort(df.movieId.unique())
     uidx = {u: k for k, u in enumerate(users)}
+    iidx = {i: k for k, i in enumerate(items)}
+    df["u"] = df.userId.map(uidx)
+    df["i"] = df.movieId.map(iidx)
+    n_users, n_items = len(users), len(items)
 
-    R = np.zeros((len(users), len(items)), dtype=np.float32)
-    liked = np.zeros_like(R, dtype=bool)
-    for u, i, rating in ratings:
-        if i in keep_set:
-            R[uidx[u], iidx[i]] = 1.0
-            if rating >= like_threshold:
-                liked[uidx[u], iidx[i]] = True
-
-    relevant = [set() for _ in users]
+    # The hold-out: shuffle every interaction once with the seed, then hold out the
+    # first `holdout` fraction of each user's interactions (at least one, and only
+    # for users with five or more). Every rating is an interaction; the held-out
+    # ones rated at least `like_threshold` are the hits.
+    relevant = [set() for _ in range(n_users)]
     if holdout > 0.0:
-        rng = np.random.default_rng(seed)
-        for u in range(R.shape[0]):
-            inter = np.flatnonzero(R[u])
-            if inter.size < 5:                     # too few to split meaningfully
-                continue
-            n_out = max(1, int(round(holdout * inter.size)))
-            held = rng.choice(inter, size=n_out, replace=False)
-            R[u, held] = 0.0                       # the model never sees these
-            # only the held-out interactions the user actually liked count as hits
-            relevant[u] = set(int(i) for i in held if liked[u, i])
+        df = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        rank = df.groupby("u").cumcount()
+        cnt = df.groupby("u")["u"].transform("size")
+        is_test = (rank < np.maximum(1, (holdout * cnt).round())) & (cnt >= 5)
+        test = df[is_test & (df.rating >= like_threshold)]
+        df = df[~is_test]
+        for u, i in zip(test.u.values, test.i.values):
+            relevant[u].add(int(i))
+
+    R = np.zeros((n_users, n_items), dtype=np.float32)
+    R[df.u.values, df.i.values] = 1.0
 
     titles = [names.get(i, f"item {i}") for i in items]
     info = {
         "dataset": dataset,
         "n_users": len(users),
         "n_items": len(items),
-        "n_interactions": int(R.sum()),
-        "popularity": np.array([counts[i] for i in items], dtype=np.int64),
+        "n_interactions": int(len(df)),                  # counted exactly, not as a float32 sum
+        "popularity": counts.reindex(items).to_numpy(dtype=np.int64),
         "relevant": relevant,
         "holdout": holdout,
     }
