@@ -24,7 +24,7 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT = os.path.join(HERE, "..", "..", "mdpp-book", "chapters", "ch00-demm-lite-block-matmul",
-                       "manuscript", "ch00-draft-v20.md")
+                       "manuscript", "ch00-draft-v21.md")
 MANUSCRIPT = os.environ.get("MDPP_CH02_MANUSCRIPT", DEFAULT)
 
 if not os.path.exists(MANUSCRIPT):
@@ -152,6 +152,26 @@ def test_listing_2_9_matches_repo():
     repo = body(function_in_repo(mod, "demm_matmul"), drop_return=True)
     repo = [s for s in repo if not (isinstance(s, ast.Assign) and s.targets[0].id in {"m", "p", "n"})]
     assert dump(text_core) == dump(repo)
+
+
+def test_listing_2_9_settings_are_the_reported_ones():
+    """Listing 2.9's q, s and h are the defaults here and the harness's settings,
+    so running the listing as printed reproduces Table 2.1."""
+    import json
+    import demm_coordinator
+    import demm_gram_coordinator
+    listed = {}
+    for node in parse(numbered_listings()["2.9"][1]).body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)                 and node.targets[0].id in {"q", "s", "h"}:
+            listed[node.targets[0].id] = ast.literal_eval(node.value)
+    for fn in (demm_coordinator.demm_matmul, demm_gram_coordinator.demm_gram):
+        defaults = {k: v.default for k, v in inspect.signature(fn).parameters.items()
+                    if k in listed}
+        assert defaults == listed, fn.__name__
+    nb = json.load(open(os.path.join(HERE, "experiment_harness.ipynb"), encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    m = re.search(r"OVERSAMPLE, REFINEMENTS = (\d+), (\d+)", src)
+    assert (int(m.group(1)), int(m.group(2))) == (listed["s"], listed["h"])
 
 
 def test_check_catches_a_name_mismatch():

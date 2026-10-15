@@ -7,7 +7,7 @@
                                              products for validation.
 
 The book writes listing 2.9 as a program with `device_ids = [0, 1]` and
-`q, s, h = 32, 8, 1` at module level. Here the same statements are the body of
+`q, s, h = 32, 10, 2` at module level. Here the same statements are the body of
 `demm_matmul`, with those values as defaults, and it returns the factors and the
 assembled approximation. Device IDs may repeat on a one-GPU machine.
 
@@ -33,7 +33,7 @@ with open(
     _SRC = _f.read()
 
 
-def demm_matmul(A, B, device_ids=(0, 1), q=32, s=8, h=1, _SRC=_SRC):
+def demm_matmul(A, B, device_ids=(0, 1), q=32, s=10, h=2, _SRC=_SRC):
     m = A.shape[0]
     p = A.shape[1]
     n = B.shape[1]

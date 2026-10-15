@@ -48,7 +48,7 @@ def demm_gram_worker(device_id, R_r, q, s, h, _SRC, seed):
     return L_r.astype(np.float32), diag_r
 
 
-def demm_gram(R, device_ids=(0,), q=32, s=8, h=1, seed=1000, participants=None):
+def demm_gram(R, device_ids=(0,), q=32, s=10, h=2, seed=1000, participants=None):
     """The item-item model as a collection of per-worker factors.
 
     `participants` restricts which workers report: a missing worker removes only
