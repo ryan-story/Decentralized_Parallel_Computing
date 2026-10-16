@@ -6,7 +6,7 @@ distributed reduction that needs every worker, then as commit-and-merge, which
 commits once enough workers have contributed and says exactly which ones did.
 
 Section 3.2.1 of the book refers to this folder,
-`Decentralized_Parallel_Programming/Ch03/`, as the chapter's companion code.
+`Decentralized_Parallel_Computing/Ch03/`, as the chapter's companion code.
 
 ## The files, in the order the chapter builds them
 

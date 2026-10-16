@@ -7,7 +7,7 @@ build an item-item recommender whose users are split across workers and never
 pooled.
 
 Section 2.4.2 of the book refers to this folder,
-`Decentralized_Parallel_Programming/Ch02/`, as the chapter's companion code.
+`Decentralized_Parallel_Computing/Ch02/`, as the chapter's companion code.
 
 ## The files, in the order the chapter builds them
 

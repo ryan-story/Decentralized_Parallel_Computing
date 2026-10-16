@@ -7,7 +7,7 @@ histogram that needs every worker, then as an Influence-Limited Quorum Histogram
 it can prove malformed, and bounds how far any one worker can move any one bin.
 
 Section 4.2 of the book refers to this folder,
-`Decentralized_Parallel_Programming/Ch04/`, as the chapter's companion code.
+`Decentralized_Parallel_Computing/Ch04/`, as the chapter's companion code.
 
 ## The files, in the order the chapter builds them
 
