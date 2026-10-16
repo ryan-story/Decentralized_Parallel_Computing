@@ -15,7 +15,7 @@ Section 4.2 of the book refers to this folder,
 |---|---|---|---|
 | `kernels.cu` | 4.1.1, 4.1.3 | 4.1, 4.2 | `NaiveHistogramKernel`, which increments `h[b] += 1` with no synchronization and loses updates, and `PartialHistogramKernel`, the worker kernel: a block-private histogram in shared memory, `atomicAdd` inside the block, one published row per block. The only device code in the chapter. |
 | `partial_histogram.py` | 4.1.3 | 4.3 | `partial_histogram`: supplies each block's shared memory, launches the worker kernel, and sums the published rows into one worker histogram. |
-| `worker_contribution.py` | 4.3.1 | 4.4 | Binds one worker to one GPU and returns its histogram to the host as an int64 vector. |
+| `worker_contribution.py` | 4.3.1 | 4.4 | Binds one worker to one GPU and returns its histogram to the host as an int32 vector. |
 | `distributed_histogram.py` | 4.3.2 | 4.5 | The all-worker coordinator. Runs every worker, checks each vector's shape, type and sign, adds it as it arrives, and returns once every shard has contributed. |
 | `allreduce_histogram.py` | 4.3.3 | 4.6 | The same merge as a `torch.distributed` All-Reduce, so every rank ends up holding the global histogram. |
 | `contribution.py` | 4.4.2 | 4.7, 4.8 | `HistogramContribution` and `validate_histogram`: the five checks a coordinator can make from a contribution and the epoch's declarations alone. |
