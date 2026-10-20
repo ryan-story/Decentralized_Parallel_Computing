@@ -1,4 +1,4 @@
-"""Chapter 5, sections 5.1 to 5.5: the experiment harness behind the chapter's results.
+"""Chapter 5, sections 5.2 and 5.5: the experiment harness behind the chapter's results.
 
 Plumbing for the notebook rather than a listing. Every coordinator decision is made
 by the chapter's own functions: `receive` and `advance` (listing 5.8),
@@ -13,9 +13,7 @@ replacement delays, replayed in order as listing 5.11's loop would see them.
 
 and one function per result the chapter reports, in chapter order:
 
-    down_sweep()              table 5.1
-    settings()                table 5.2
-    worker_scan_time()        table 5.2, the measured row
+    worker_scan_time()        the measured kernel time in table 5.2
     missing_blocks()          table 5.3, figure 5.3, and the unfinalized areas and
                               normalized error quoted in section 5.2.3
     participants()            table 5.4, and the permanently missing and late
@@ -287,62 +285,6 @@ def check_exact(blocks, run):
 
 
 # --------------------------------------------------------------- the results
-
-def down_sweep(values=(2, 6, 1, 3, 5, 2, 4, 7)):
-    """Table 5.1: the down-sweep of figure 5.2, level by level.
-
-    Listing 5.1 keeps its tree in shared memory, where the host cannot see it, so
-    this tabulates the intermediate values by stepping through the same two passes.
-    Each row is one parent: its value, its left child's (a copy), and its right
-    child's (parent plus the left sibling's up-sweep sum). The leaves are then
-    checked against listing 5.1 run on the GPU.
-    """
-    n = len(values)
-    temp = np.array(values, dtype=np.float32)
-    offset = 1
-    while offset < n:                                       # up-sweep, in place
-        i = np.arange(2 * offset - 1, n, 2 * offset)
-        temp[i] += temp[i - offset]
-        offset <<= 1
-    temp[n - 1] = 0.0
-    names = {n // 2: "Root to halves", n // 4: "Halves to quarters", n // 8: "Quarters to leaves"}
-    rows, offset = [], n >> 1
-    while offset > 0:
-        for i in range(2 * offset - 1, n, 2 * offset):
-            parent, sibling = int(temp[i]), int(temp[i - offset])
-            rows.append({"level": names.get(offset, f"offset {offset}"), "parent": parent,
-                         "left": parent, "right": parent + sibling, "added": sibling})
-        i = np.arange(2 * offset - 1, n, 2 * offset)
-        left = temp[i - offset].copy()
-        temp[i - offset] = temp[i]
-        temp[i] += left
-        offset >>= 1
-    leaves = temp.astype(int).tolist()
-    kernel, _ = scan_launcher(0, list(values), _SRC, tile=n)
-    return {"rows": rows, "leaves": leaves,
-            "matches_listing_5_1": leaves == _host(kernel).astype(int).tolist()}
-
-
-def settings():
-    """Table 5.2: the working example's workload, infrastructure model and settings."""
-    return [
-        ("input", f"{N_BLOCKS * BLOCK_LEN:,} float32 values, uniform on [0, 1)"),
-        ("logical blocks and workers", f"{N_BLOCKS} blocks of {BLOCK_LEN:,} values, one worker per block"),
-        ("worker finish time", "0.10 s median, lognormal with log-space spread 0.35"),
-        ("slow workers", "each block has a 5% chance of an extra 0.4 to 1.2 s (25% under heavy churn)"),
-        ("failures", "none; one early, middle or late block never reports; one early and one "
-                     "middle block never report; one early block reports 2 s late"),
-        ("failed block positions", "drawn at random in each repetition, one from each third of "
-                                   "the sequence: early 0-20, middle 21-42, late 43-63"),
-        ("CPR repair deadline", f"{REPAIR_DEADLINE} s"),
-        ("replacement worker", f"reads the block from its source and reports {REPAIR_COST} s after assignment"),
-        ("CPR lookahead window", f"{LOOKAHEAD} blocks, the whole sequence"),
-        ("CPR checkpoint interval", f"every {CHECKPOINT_INTERVAL} blocks"),
-        ("observation window", f"{OBSERVE:g} seconds"),
-        ("repetitions", f"{REPETITIONS} per condition, with new input values and finish times each time"),
-        ("reported value", f"mean over the {REPETITIONS} repetitions"),
-    ]
-
 
 def worker_scan_time(repeats=500, seed=7):
     """Table 5.2's measured row: listing 5.3 on one 4,096-value block, timed on the

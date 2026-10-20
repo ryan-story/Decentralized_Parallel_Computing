@@ -22,10 +22,12 @@ Section 5.2 of the book refers to this folder,
 | `cpr_coordinator.py` | 5.4.2 | 5.8, 5.9 | `advance`, `receive` and `check_for_gap`: accept in any order, finalize in logical order, report the next persistent gap. |
 | `cpr_scan.py` | 5.4.3 | 5.10, 5.11 | `cpr_worker`, `deliver` and `cpr_scan`: CPR on the wall clock, with spare GPUs for repairs. |
 | `recover.py` | 5.4.4 | 5.12 | `recover`: rebuilds the coordinator from the checkpoint and the summary log. |
-| `scan_experiments.py` | 5.1 to 5.5 | | The experiment harness: replays seeded arrival traces through the chapter's own `receive`, `advance`, `check_for_gap` and `recover`, and returns each result the chapter reports. |
-| `experiment_harness.ipynb` | | | Runs the harness and prints the chapter's results: tables 5.1 to 5.7 and figure 5.3. Nothing else. |
+| `scan_experiments.py` | 5.2, 5.5 | | The experiment harness: replays seeded arrival traces through the chapter's own `receive`, `advance`, `check_for_gap` and `recover`, and returns each result the chapter reports. |
+| `experiment_harness.ipynb` | | | Runs the harness and prints the chapter's experiment results: the measured kernel time in table 5.2, tables 5.3 to 5.7, and figure 5.3. Nothing else. |
 
-Figures 5.1, 5.2 and 5.4 are diagrams, so none of them has a file.
+Figures 5.1, 5.2 and 5.4 are diagrams, table 5.1 traces the scan on eight
+illustrative values, and table 5.2 otherwise lists the experiment's settings, so
+none of these is generated here.
 
 ## Getting started
 
@@ -47,8 +49,8 @@ time.
 jupyter lab experiment_harness.ipynb
 ```
 
-It runs in under a minute on either path and reproduces every table value the
-chapter quotes, along with figure 5.3. Every block is scanned by `scan_launcher`
+It runs in under a minute on either path and reproduces every experiment result
+the chapter quotes, along with figure 5.3. Every block is scanned by `scan_launcher`
 and finalized by `finalize_block`, and every coordinator decision is made by the
 chapter's functions; only the finish times, failures and replacement delays are
 seeded. The kernel time in table 5.2 depends on the GPU, and varies from run to
