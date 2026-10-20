@@ -1,0 +1,24 @@
+# Chapter 6: Decentralized Parallel Programming
+#
+# The chapter needs an NVIDIA GPU: kernels.cu is compiled at run time through CuPy,
+# and every convolution runs there. The book's numbers were measured on an RTX 5070.
+
+numpy>=1.24
+pillow>=10.0             # decoding Imagenette
+matplotlib>=3.7          # the harness notebook's figures
+jupyterlab>=4.0          # to open experiment_harness.ipynb
+
+# CuPy, matched to your CUDA toolkit:
+#   pip install cupy-cuda12x        (CUDA 12.x)
+#   pip install cupy-cuda11x        (CUDA 11.x)
+# cupy-cuda12x
+#
+# PyTorch, for the cuDNN reference in tables 6.1 and 6.4, the exactness check, and
+# retraining (https://pytorch.org for the CUDA build that matches your driver):
+# torch
+#
+# Optional, for listing 6.11 (MPI). mpi4py needs an MPI runtime: Open MPI or MPICH
+# on Linux and macOS; on Windows, impi_rt installs Intel MPI:
+#   pip install mpi4py
+#   pip install impi_rt             (Windows only)
+# mpi4py
