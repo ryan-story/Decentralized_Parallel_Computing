@@ -24,11 +24,12 @@ Section 6.2 of the book refers to this folder,
 | `vhc_infer.py` | 6.4.3 | 6.18, 6.19 | `vhc_worker`, `final_logits` and `vhc_infer`: VHC on the wall clock, one thread per tile, with a spare taking over a silent tile. |
 | `model.py` | 6.1.3 | | The network's definition, the data download and preprocessing, the PyTorch reference, and the training that produced the weights. |
 | `conv_experiments.py` | 6.1, 6.2, 6.5 | | The experiment harness: runs the chapter's listings and returns each result the chapter reports. |
-| `experiment_harness.ipynb` | | | Runs the harness and prints the chapter's experiment results: tables 6.1, 6.4 and 6.6 to 6.12, figures 6.4 and 6.5, and the exactness counts. Nothing else. |
+| `experiment_harness.ipynb` | | | Runs the harness and prints the chapter's experiment results: tables 6.1, 6.4 and 6.6 to 6.12, figures 6.3, 6.4 and 6.6, and the exactness counts. Nothing else. |
 | `model/weights.npz` | | | The frozen weights every number in the book was measured with. |
 | `model/costs.json` | | | Listing 6.6's kernel cost per layer, measured on the book's RTX 5070, which the harness uses as worker compute times. |
+| `assets/chelsea.png` | 6.1.3 | | The photograph in figure 6.3, by Stefan van der Walt, released under CC0 and distributed with scikit-image. |
 
-Figures 6.1 to 6.3 are diagrams, and tables 6.2, 6.3 and 6.5 hold definitions and
+Figures 6.1, 6.2 and 6.5 are diagrams, and tables 6.2, 6.3 and 6.5 hold definitions and
 settings, so none of these is generated here.
 
 ## Getting started
@@ -51,7 +52,7 @@ never committed.
 jupyter lab experiment_harness.ipynb
 ```
 
-Every simulated result (tables 6.6 to 6.12, figures 6.4 and 6.5) reproduces exactly:
+Every simulated result (tables 6.6 to 6.12, figures 6.4 and 6.6) reproduces exactly:
 the arithmetic runs on your GPU, but worker compute times come from
 `model/costs.json`, not from your GPU, and every draw is seeded. Tables 6.1 and 6.4
 time your GPU, so they vary from run to run and will not match the book's RTX 5070

@@ -24,7 +24,7 @@ import numpy as np
 
 import model
 from image_convolution import conv2d_basic, conv2d_const
-from cnn import CHANNELS, POOL_AFTER, cnn_forward, head, load_weights, max_pool
+from cnn import CHANNELS, POOL_AFTER, cnn_forward, conv_layer, head, load_weights, max_pool
 from distributed_cnn import distributed_cnn
 from halo_commit import HaloCommit, NEIGHBOURS, band, open_tile
 from vhc_tile import advance, ready_strips, receive_halo
@@ -578,6 +578,31 @@ def layer_kernels(launches=200):
                      "max_abs_difference": err})
         x = y if k not in POOL_AFTER else max_pool(y)
     return rows
+
+
+# ------------------------------------------------- 6.1 a filter on a photograph
+
+CAT = HERE / "assets" / "chelsea.png"       # CC0, Stefan van der Walt, via scikit-image
+SOBEL_X = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+
+
+def feature_maps():
+    """The photograph through listing 6.5 with two edge filters, and through the
+    trained network one layer at a time (listing 6.7, as listing 6.8 applies it)."""
+    from PIL import Image
+    rgb = np.asarray(Image.open(CAT).convert("RGB"))[:, 1:449]   # 300 x 448, even sides
+    gray = rgb.astype(np.float32).mean(axis=2) / 255.0
+    edges = {"vertical": cp.asnumpy(conv2d_const(0, gray, SOBEL_X, _SRC)),
+             "horizontal": cp.asnumpy(conv2d_const(0, gray, SOBEL_X.T.copy(), _SRC))}
+    P, x, layers = params(), cp.asarray(model.normalize(rgb[None])[0]), []
+    for k in range(6):
+        x = conv_layer(0, cp.pad(x, ((0, 0), (1, 1), (1, 1))), P[f"w{k}"], P[f"b{k}"], _SRC)
+        layers.append(cp.asnumpy(x))
+        if k in POOL_AFTER:
+            x = max_pool(x)
+    features, logits = cnn_forward(0, model.normalize(rgb[None])[0], P, _SRC)
+    assert cp.array_equal(features, cp.asarray(layers[5]))      # the same as listing 6.8
+    return {"rgb": rgb, "edges": edges, "layers": layers, "logits": cp.asnumpy(logits)}
 
 
 # ------------------------------------------------------------- exactness

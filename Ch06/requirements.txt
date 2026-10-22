@@ -4,7 +4,7 @@
 # and every convolution runs there. The book's numbers were measured on an RTX 5070.
 
 numpy>=1.24
-pillow>=10.0             # decoding Imagenette
+pillow>=10.0             # decoding Imagenette and figure 6.3's photograph
 matplotlib>=3.7          # the harness notebook's figures
 jupyterlab>=4.0          # to open experiment_harness.ipynb
 
